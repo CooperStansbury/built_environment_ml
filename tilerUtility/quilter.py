@@ -12,12 +12,13 @@ import matplotlib.pyplot as plt
 from affine import Affine
 from pyproj import Proj
 from pyproj import transform
+from skimage.transform import resize
 
 
 class MosiacBuilder():
     """ A class to manage building mosaics/tiles/quilts from a geotiff images. 
     """
-    __slots__ = ['path', 'src', 'pad_val', 'side_len']
+    __slots__ = ['path', 'src', 'pad_val', 'side_len', 'resolution_scaler']
     def __init__(self, path):
         """ Initialize the builder. Note, this step is not very memory intensive. 
         
@@ -29,7 +30,23 @@ class MosiacBuilder():
         self.side_len = None
         self.path = path
         self.src = rasterio.open(self.path)
+        self.resolution_scaler = 2 / self.src.res[0]
         self.pad_val = 255 # for empty tiles on the edges of the frame
+
+
+    # def _get_resoltion(self):
+    #     """A function to return the resolution of a GEOTIFF. Wayne County
+    #     has a different resolution than the other counties and thus the side
+    #     length of a given tile needs to be corrected so that images represent 
+    #     the same area.
+
+    #     Returns:
+    #         - scaler (int): 1 is resolution == 2.0, else return 2.
+    #     """
+    #     if self.src.res[0] == 1.0:
+    #         return 2
+    #     else:
+    #         return 1
 
 
     def get_window(self, row, col, side_len, return_win=False):
@@ -93,27 +110,37 @@ class MosiacBuilder():
                 center of an image
         """
         self.side_len = side_len
+        side_len_scaled = self.side_len * self.resolution_scaler
+
+        print(self.side_len, side_len_scaled, self.resolution_scaler)
         tiles = []
         center_coords = []
 
         # get random starting positions 
-        rand_rows = np.random.randint(self.src.shape[0]-side_len , size=(n,))
-        rand_cols = np.random.randint(self.src.shape[1]-side_len, size=(n,))
+        rand_rows = np.random.randint(self.src.shape[0]-side_len_scaled , size=(n,))
+        rand_cols = np.random.randint(self.src.shape[1]-side_len_scaled, size=(n,))
 
         for row_idx, col_idx in zip(rand_rows, rand_cols):
             # get clip
-            clip = self.get_window(row_idx, col_idx, side_len)
+            clip = self.get_window(row_idx, col_idx, side_len_scaled)
 
             # handle non-square clips
-            if clip.shape[1] != side_len or clip.shape[2] != side_len:
-                pad = np.full((3, side_len, side_len), self.pad_val)
+            if clip.shape[1] != side_len_scaled or clip.shape[2] != side_len_scaled:
+                pad = np.full((3, side_len_scaled, side_len_scaled), self.pad_val)
                 pad[:, 0:clip.shape[1], 0:clip.shape[2]] = clip
                 clip = pad.copy()
+
+            if self.resolution_scaler != 1:
+                # note that we use the unscaled side length to ensure numpy arrays
+                # have the same dimensionality
+                clip = resize(clip, (3, self.side_len, self.side_len))
+            
+            print(clip.shape)
 
             tiles.append(clip)
 
             # get center lat/lon
-            lat, lon = self.get_latlon_point(row_idx + side_len // 2, col_idx + side_len // 2)
+            lat, lon = self.get_latlon_point(row_idx + side_len_scaled // 2, col_idx + side_len_scaled // 2)
             center_coords.append([lat, lon])
 
         return tiles, center_coords
@@ -167,7 +194,7 @@ class MosiacBuilder():
         return tiles, center_coords
 
 
-    def build_fig(self, size=(5, 5), dpi=300):
+    def build_fig(self, size=(10, 10), dpi=300):
         """A function to build a matplotlib figure. Primary
         goal is to sandardize the easy stuff.
 
